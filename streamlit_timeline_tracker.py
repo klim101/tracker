@@ -1,372 +1,334 @@
-# Streamlit Timeline Tracker — single file app
-# Author: ChatGPT (GPT-5 Thinking)
-# Run: 1) pip install streamlit plotly pandas python-dateutil
-#      2) streamlit run streamlit_timeline_tracker.py
+# Timeline Tracker — минималистичная «нотная тетрадь»
+# Запуск: pip install streamlit plotly pandas python-dateutil streamlit-plotly-events
+#         streamlit run streamlit_timeline_tracker.py
 
 from __future__ import annotations
 import json
-from datetime import date, timedelta, datetime
-from typing import List, Dict
+from datetime import date, datetime, timedelta
+from typing import Dict, List
 
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 import streamlit as st
 from dateutil.relativedelta import relativedelta
+from streamlit_plotly_events import plotly_events
 
 st.set_page_config(page_title="Timeline Tracker", layout="wide")
 
-# -----------------------------
-# Helpers
-# -----------------------------
+# =====================
+# Вспомогательные
+# =====================
 
-def _today() -> date:
+def today() -> date:
     return date.today()
 
 
-def daterange(d0: date, d1: date) -> List[date]:
-    """Inclusive [d0, d1] daily range."""
-    days = (d1 - d0).days
-    return [d0 + timedelta(days=i) for i in range(days + 1)]
+def to_date(x) -> date:
+    if isinstance(x, date):
+        return x
+    return pd.to_datetime(x).date()
 
 
-def px_size(percent: int, min_px: int = 6, max_px: int = 28) -> int:
-    if percent <= 0:
-        return 0
-    percent = max(0, min(100, int(percent)))
-    return int(min_px + (max_px - min_px) * (percent / 100))
+def start_of_month(d: date) -> date:
+    return d.replace(day=1)
 
 
-def to_iso(d: date | datetime | str) -> str:
-    if isinstance(d, str):
-        return d
-    if isinstance(d, datetime):
-        return d.date().isoformat()
-    return d.isoformat()
+def days_in_month(d: date) -> int:
+    first = start_of_month(d)
+    nxt = first + relativedelta(months=1)
+    return (nxt - first).days
 
 
-# -----------------------------
-# Session State init
-# -----------------------------
+def compute_size(note: str) -> int:
+    """Размер точки/ноты растёт с длиной заметки (reward-механика)."""
+    if not note:
+        return 4  # микро-точка напоминалка
+    # 6 .. 28 px в зависимости от длины
+    n = len(note.strip())
+    return max(6, min(28, 6 + n // 6))
+
+
+# =====================
+# Session State (данные)
+# =====================
 if "groups" not in st.session_state:
-    st.session_state.groups: List[str] = ["Личное", "Работа"]
+    # Порядок важен; стартуем с двух пустых групп
+    st.session_state.groups: List[str] = ["Работа", "Личное"]
 
-if "projects" not in st.session_state:
-    # project -> group
-    st.session_state.projects: Dict[str, str] = {
-        "ЗОЖ": "Личное",
-        "Диссертация": "Работа",
-    }
+if "tracks" not in st.session_state:
+    # список дорожек: {id, group, name}
+    st.session_state.tracks: List[Dict] = []
 
 if "entries" not in st.session_state:
-    # entries: list of {date:str, project:str, group:str, percent:int, note:str}
+    # отметки: {date: ISO, track_id: str, note: str}
     st.session_state.entries: List[Dict] = []
 
-if "palette" not in st.session_state:
-    st.session_state.palette = px.colors.qualitative.Plotly + px.colors.qualitative.D3
+if "birthday" not in st.session_state:
+    # по умолчанию 28 сентября
+    st.session_state.birthday = {"m": 9, "d": 28}
 
-# -----------------------------
-# Sidebar — Controls
-# -----------------------------
-with st.sidebar:
-    st.header("⚙️ Настройки")
+# окно по умолчанию (без видимых контролов)
+END = today()
+START = END - timedelta(days=120)
+all_days = pd.date_range(START, END, freq="D")
 
-    # Time window presets
-    preset = st.selectbox(
-        "Окно по времени",
-        (
-            "30 дней",
-            "60 дней",
-            "90 дней",
-            "6 месяцев",
-            "12 месяцев",
-            "Всё время",
-        ),
-        index=2,
+# =====================
+# Шапка (минимализм, без контролов)
+# =====================
+now = datetime.now()
+hour = now.hour
+if 5 <= hour < 11:
+    day_emoji = "🌅"
+elif 11 <= hour < 17:
+    day_emoji = "☀️"
+elif 17 <= hour < 22:
+    day_emoji = "🌇"
+else:
+    day_emoji = "🌙"
+
+# метрики мотивации
+m_first = start_of_month(END)
+month_pct = int(round((END - m_first).days / max(1, days_in_month(END)) * 100))
+
+b = st.session_state.birthday
+next_bd_year = END.year if (END.month, END.day) <= (b["m"], b["d"]) else END.year + 1
+next_bd = date(next_bd_year, b["m"], b["d"])
+days_to_bd = (next_bd - END).days
+
+colA, colB = st.columns([1, 2])
+with colA:
+    st.markdown(f"### {day_emoji} \- {END.strftime('%d %b %Y')}")
+with colB:
+    st.markdown(
+        f"**Месяц пройден на ~{month_pct}%** · **до ДР {days_to_bd} дн.**",
     )
-    end_date = st.date_input("Конец периода", _today())
 
-    if preset == "30 дней":
-        start_date = end_date - timedelta(days=29)
-    elif preset == "60 дней":
-        start_date = end_date - timedelta(days=59)
-    elif preset == "90 дней":
-        start_date = end_date - timedelta(days=89)
-    elif preset == "6 месяцев":
-        start_date = end_date - relativedelta(months=6) + timedelta(days=1)
-    elif preset == "12 месяцев":
-        start_date = end_date - relativedelta(months=12) + timedelta(days=1)
-    else:
-        # Всё время — если есть отметки, от первой; иначе 180 дней назад
-        if st.session_state.entries:
-            start_date = min(datetime.fromisoformat(e["date"]).date() for e in st.session_state.entries)
-        else:
-            start_date = end_date - timedelta(days=179)
+# =====================
+# Подготовка данных для отрисовки
+# =====================
+# Категории (ось Y): группы как заголовки, под ними дорожки, внизу \"ДНИ\"
+cat_labels: List[str] = []
+CAT_GROUP_PREFIX = "▧ "  # визуальный заголовок группы (клик по нему добавляет дорожку)
+CAT_TRACK_PREFIX = "• "  # дорожка
 
-    # Group filter
-    groups = list(dict.fromkeys(st.session_state.groups))
-    groups_to_show = st.multiselect("Показывать группы", options=groups, default=groups)
+for g in st.session_state.groups:
+    cat_labels.append(f"{CAT_GROUP_PREFIX}{g}")
+    for t in st.session_state.tracks:
+        if t["group"] == g:
+            cat_labels.append(f"{CAT_TRACK_PREFIX}{t['name']}")
 
-    st.divider()
+cat_labels.append("ДНИ")  # базовая шкала внизу
 
-    with st.expander("➕ Добавить группу"):
-        new_group = st.text_input("Название группы", key="add_group_name")
-        if st.button("Добавить группу", use_container_width=True, key="btn_add_group"):
-            if new_group and new_group not in st.session_state.groups:
-                st.session_state.groups.append(new_group)
-                st.success(f"Группа ‘{new_group}’ добавлена")
-            else:
-                st.warning("Введите уникальное название группы")
+# маппинги для быстрого поиска
+track_label_to_id: Dict[str, str] = {}
+for t in st.session_state.tracks:
+    track_label_to_id[f"{CAT_TRACK_PREFIX}{t['name']}"] = t["id"]
 
-    with st.expander("➕ Добавить проект/дело"):
-        proj_name = st.text_input("Название проекта", key="add_proj_name")
-        proj_group = st.selectbox("Группа", options=list(st.session_state.groups), key="add_proj_group")
-        if st.button("Добавить проект", use_container_width=True, key="btn_add_project"):
-            if proj_name:
-                st.session_state.projects[proj_name] = proj_group
-                st.success(f"Проект ‘{proj_name}’ добавлен в группу ‘{proj_group}’")
-            else:
-                st.warning("Укажите название проекта")
-
-    with st.expander("📝 Добавить отметку на шкале"):
-        if not st.session_state.projects:
-            st.info("Сначала добавьте проект")
-        else:
-            sel_proj = st.selectbox("Проект", options=sorted(st.session_state.projects.keys()), key="mark_proj")
-            mark_date = st.date_input("Дата", _today(), key="mark_date")
-            mark_percent = st.slider("Размер кружка (0–100%)", 0, 100, 50, step=5, key="mark_percent")
-            mark_note = st.text_area("Заметка (опционально)", key="mark_note", placeholder="Что произошло/что сделано")
-            if st.button("Сохранить отметку", use_container_width=True, key="btn_add_mark"):
-                entry = {
-                    "date": to_iso(mark_date),
-                    "project": sel_proj,
-                    "group": st.session_state.projects.get(sel_proj, ""),
-                    "percent": int(mark_percent),
-                    "note": mark_note.strip(),
-                }
-                st.session_state.entries.append(entry)
-                st.success("Отметка добавлена")
-
-    st.divider()
-    with st.expander("⬇️ Экспорт / ⬆️ Импорт"):
-        if st.button("Скачать JSON", use_container_width=True):
-            payload = {
-                "groups": st.session_state.groups,
-                "projects": st.session_state.projects,
-                "entries": st.session_state.entries,
-            }
-            st.download_button(
-                "Скачать файл",
-                data=json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
-                file_name=f"timeline_{_today().isoformat()}.json",
-                mime="application/json",
-            )
-        uploaded = st.file_uploader("Загрузить JSON", type=["json"])
-        if uploaded is not None:
-            try:
-                payload = json.load(uploaded)
-                st.session_state.groups = list(payload.get("groups", []))
-                st.session_state.projects = dict(payload.get("projects", {}))
-                st.session_state.entries = list(payload.get("entries", []))
-                st.success("Данные импортированы")
-            except Exception as e:
-                st.error(f"Не удалось импортировать: {e}")
-
-# -----------------------------
-# Main — Title
-# -----------------------------
-col_l, col_r = st.columns([1, 1])
-with col_l:
-    st.title("🗓️ Timeline Tracker — кружочки по дням")
-with col_r:
-    st.caption("Наведите на кружок, чтобы увидеть заметку. Масштабируйте колесом мыши или ползунком под графиком.")
-
-# -----------------------------
-# Build plot data
-# -----------------------------
-
-start_date = min(start_date, end_date)
-all_days = pd.date_range(start=start_date, end=end_date, freq="D")
-
-# Determine visible projects by group filter
-visible_projects = [p for p, g in st.session_state.projects.items() if g in groups_to_show]
-
-# Prepare entries df
+# entries -> DataFrame
 if st.session_state.entries:
     df_e = pd.DataFrame(st.session_state.entries)
-    # coerce types
     df_e["date"] = pd.to_datetime(df_e["date"]).dt.date
-    df_e["percent"] = pd.to_numeric(df_e["percent"], errors="coerce").fillna(0).astype(int)
-    df_e["group"] = df_e["group"].astype(str)
-    df_e["project"] = df_e["project"].astype(str)
 else:
-    df_e = pd.DataFrame(columns=["date", "project", "group", "percent", "note"])  # empty
+    df_e = pd.DataFrame(columns=["date", "track_id", "note"])  # пусто
 
-# Filter entries by window & group filter
-mask = (df_e["date"].between(start_date, end_date)) if not df_e.empty else []
-if not df_e.empty:
-    df_e_win = df_e.loc[mask & (df_e["project"].isin(visible_projects))].copy()
-else:
-    df_e_win = df_e.copy()
-
-# Category labels (y-axis): baseline first, then projects grouped
-category_labels: List[str] = ["⏱ День"]
-for g in groups_to_show:
-    for p in sorted([p for p, gg in st.session_state.projects.items() if gg == g]):
-        category_labels.append(f"{g} • {p}")
-
-# Map project->category label and color
-proj_to_cat = {p: f"{st.session_state.projects[p]} • {p}" for p in st.session_state.projects}
-proj_colors = {}
-for idx, p in enumerate(sorted(st.session_state.projects.keys())):
-    proj_colors[p] = st.session_state.palette[idx % len(st.session_state.palette)]
-
-# -----------------------------
-# Figure
-# -----------------------------
+# =====================
+# Фигура (нотная тетрадь)
+# =====================
 fig = go.Figure()
 
-# 1) Baseline "Day" — gray line + daily markers 100%
+# 0) текущая дата — вертикальная тонкая линия
+fig.add_vline(x=pd.Timestamp(END), line_width=1, line_dash="dot", line_color="rgba(0,0,0,0.4)")
+
+# 1) базовая нижняя шкала ДНИ: тонкая серая линия + тики по дням
 fig.add_trace(
     go.Scatter(
         x=all_days,
-        y=["⏱ День"] * len(all_days),
-        mode="lines+markers",
-        line=dict(color="#C2C7CF", width=1),
-        marker=dict(color="#C2C7CF", size=[px_size(100)] * len(all_days)),
-        hovertemplate="%{x|%Y-%m-%d}<extra>День</extra>",
-        name="День",
+        y=["ДНИ"] * len(all_days),
+        mode="lines",
+        line=dict(color="rgba(0,0,0,0.25)", width=1),
+        hoverinfo="skip",
+        showlegend=False,
+    )
+)
+# тики (вертикальные риски) — ежедн., но очень лёгкие
+fig.add_trace(
+    go.Scatter(
+        x=all_days,
+        y=["ДНИ"] * len(all_days),
+        mode="markers",
+        marker=dict(symbol="line-ns-open", size=12, color="rgba(0,0,0,0.25)"),
+        hoverinfo="skip",
         showlegend=False,
     )
 )
 
-# 2) Project swimlanes — dotted line across window + markers for entries
-for g in groups_to_show:
-    group_projects = [p for p, gg in st.session_state.projects.items() if gg == g]
-    for p in sorted(group_projects):
-        cat = proj_to_cat[p]
-        # dotted guide line across the window
+# 2) группы: пунктирные линии (клик по строке добавляет дорожку)
+for g in st.session_state.groups:
+    ylab = f"{CAT_GROUP_PREFIX}{g}"
+    # тонкая линия по всей ширине окна
+    fig.add_trace(
+        go.Scatter(
+            x=[all_days.min(), all_days.max()],
+            y=[ylab, ylab],
+            mode="lines",
+            line=dict(color="rgba(0,0,0,0.15)", width=1, dash="dot"),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    # невидимые точки-кликкачеры по каждому дню
+    fig.add_trace(
+        go.Scatter(
+            x=all_days,
+            y=[ylab] * len(all_days),
+            mode="markers",
+            marker=dict(size=8, color="rgba(0,0,0,0.001)"),
+            hoverinfo="skip",
+            name=f"add-track-{g}",
+            showlegend=False,
+        )
+    )
+
+# 3) дорожки: тонкие линии + точки/ноты
+for g in st.session_state.groups:
+    for t in [t for t in st.session_state.tracks if t["group"] == g]:
+        ylab = f"{CAT_TRACK_PREFIX}{t['name']}"
+        # тонкая линия
         fig.add_trace(
             go.Scatter(
                 x=[all_days.min(), all_days.max()],
-                y=[cat, cat],
+                y=[ylab, ylab],
                 mode="lines",
-                line=dict(color="rgba(0,0,0,0.15)", width=1, dash="dot"),
+                line=dict(color="rgba(0,0,0,0.25)", width=1),
                 hoverinfo="skip",
                 showlegend=False,
             )
         )
-        # markers for actual entries (if any)
-        if not df_e_win.empty:
-            dsub = df_e_win.loc[df_e_win["project"] == p]
+        # точки/ноты из entries
+        if not df_e.empty:
+            dsub = df_e.loc[df_e["track_id"] == t["id"]].copy()
         else:
-            dsub = pd.DataFrame(columns=df_e_win.columns)
+            dsub = pd.DataFrame(columns=df_e.columns)
         if not dsub.empty:
-            sizes = [px_size(int(v)) for v in dsub["percent"].tolist()]
-            custom = list(
-                zip(
-                    [g] * len(dsub),
-                    [p] * len(dsub),
-                    dsub["percent"].tolist(),
-                    [s if s else "—" for s in dsub["note"].fillna("").tolist()],
+            dsub = dsub[(dsub["date"] >= START) & (dsub["date"] <= END)]
+            if not dsub.empty:
+                sizes = [compute_size(n) for n in dsub["note"].tolist()]
+                # reward: если есть заметка — символ меняется на «звезду» (в будущем можно заменить на ноту)
+                symbols = ["star" if (n and n.strip()) else "circle-open" for n in dsub["note"].tolist()]
+                fig.add_trace(
+                    go.Scatter(
+                        x=pd.to_datetime(dsub["date"]),
+                        y=[ylab] * len(dsub),
+                        mode="markers",
+                        marker=dict(size=sizes, symbol=symbols, line=dict(width=1, color="rgba(0,0,0,0.55)"), color="rgba(0,0,0,0.55)"),
+                        hovertemplate=(
+                            "<b>" + t['name'] + "</b><br>Дата: %{x|%Y-%m-%d}<br>Заметка: %{text}<extra></extra>"
+                        ),
+                        text=[(s if s else "—") for s in dsub["note"].tolist()],
+                        showlegend=False,
+                    )
                 )
+        # кликабельный слой по дням (чтобы добавлять заметки одним кликом)
+        fig.add_trace(
+            go.Scatter(
+                x=all_days,
+                y=[ylab] * len(all_days),
+                mode="markers",
+                marker=dict(size=10, color="rgba(0,0,0,0.001)"),
+                hoverinfo="skip",
+                name=f"add-note-{t['id']}",
+                showlegend=False,
             )
-            fig.add_trace(
-                go.Scatter(
-                    x=pd.to_datetime(dsub["date"]),
-                    y=[cat] * len(dsub),
-                    mode="markers",
-                    marker=dict(size=sizes, color=proj_colors.get(p)),
-                    customdata=custom,
-                    hovertemplate=(
-                        "<b>%{customdata[1]}</b><br>Группа: %{customdata[0]}<br>Дата: %{x|%Y-%m-%d}"
-                        "<br>Размер: %{customdata[2]}%<br>Заметка: %{customdata[3]}<extra></extra>"
-                    ),
-                    name=cat,
-                    showlegend=False,
-                )
-            )
+        )
 
-# Layout
-row_height = 56
-fig_height = max(400, row_height * max(2, len(category_labels)))
+# Оформление — полностью минималистично
 fig.update_layout(
-    height=fig_height,
-    margin=dict(l=10, r=10, t=10, b=10),
+    height=max(380, 52 * max(2, len(cat_labels))),
+    margin=dict(l=20, r=20, t=10, b=10),
+    xaxis=dict(
+        range=[pd.Timestamp(START), pd.Timestamp(END)],
+        showgrid=False,
+        showline=False,
+        zeroline=False,
+        tickformat="%d %b",
+        ticks="outside",
+        ticklen=4,
+        tickcolor="rgba(0,0,0,0.3)",
+    ),
     yaxis=dict(
         categoryorder="array",
-        categoryarray=category_labels[::-1],  # put baseline at the bottom
+        categoryarray=cat_labels[::-1],  # ДНИ внизу
+        showgrid=False,
+        showline=False,
+        zeroline=False,
         title="",
-    ),
-    xaxis=dict(
-        title="Дата",
-        rangeselector=dict(
-            buttons=list(
-                [
-                    dict(count=7, label="7d", step="day", stepmode="backward"),
-                    dict(count=30, label="30d", step="day", stepmode="backward"),
-                    dict(count=90, label="90d", step="day", stepmode="backward"),
-                    dict(count=6, label="6m", step="month", stepmode="backward"),
-                    dict(step="all"),
-                ]
-            )
-        ),
-        rangeslider=dict(visible=True),
     ),
     hovermode="closest",
 )
 
-# Limit visible window to [start_date, end_date]
-fig.update_xaxes(range=[pd.Timestamp(start_date), pd.Timestamp(end_date)])
+# Без лишних кнопок
+config = {"displaylogo": False, "displayModeBar": False}
 
-st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
-
-# -----------------------------
-# Editor (optional)
-# -----------------------------
-with st.expander("📋 Таблица отметок (редактирование/удаление)"):
-    if st.session_state.entries:
-        df_show = pd.DataFrame(st.session_state.entries)
-        df_show = df_show[["date", "group", "project", "percent", "note"]]
-        edited = st.data_editor(
-            df_show,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="dynamic",
-            column_config={
-                "percent": st.column_config.NumberColumn("percent", min_value=0, max_value=100, step=1),
-            },
-        )
-        # Persist changes back to session_state
-        try:
-            # Coerce types
-            edited["date"] = pd.to_datetime(edited["date"]).dt.date
-            edited["percent"] = pd.to_numeric(edited["percent"], errors="coerce").fillna(0).astype(int)
-            # Overwrite entries
-            st.session_state.entries = [
-                {
-                    "date": to_iso(r["date"]),
-                    "group": str(r["group"]).strip(),
-                    "project": str(r["project"]).strip(),
-                    "percent": int(r["percent"]),
-                    "note": str(r["note"]).strip(),
-                }
-                for _, r in edited.iterrows()
-            ]
-        except Exception as e:
-            st.warning(f"Не удалось применить изменения: {e}")
-    else:
-        st.info("Пока нет данных")
-
-# -----------------------------
-# Footer
-# -----------------------------
-st.caption(
-    """
-    ▶️ Подсказки:
-    • Добавляйте группы и проекты в сайдбаре; затем создавайте отметки по дням с процентом (0–100%).  
-    • Серая нижняя линия — базовая шкала времени: каждый день = 100%.  
-    • Масштабируйте график колесом мыши или с помощью ползунка снизу; используйте пресеты окна слева.  
-    • Экспортируйте/импортируйте JSON, если хотите переносить данные между сессиями.
-    """
+# Рендер с обработкой кликов
+clicked = plotly_events(
+    fig,
+    click_event=True,
+    select_event=False,
+    hover_event=False,
+    override_height=fig.layout.height,
+    override_width="100%",
+    key="timeline-minimal",
+    config=config,
 )
+
+# =====================
+# Обработка кликов (добавление дорожек/заметок)
+# =====================
+if clicked:
+    pt = clicked[0]
+    ylab = pt.get("y")
+    xval = to_date(pt.get("x"))
+
+    if isinstance(ylab, str) and ylab.startswith(CAT_GROUP_PREFIX):
+        # клик по заголовку группы => добавить дорожку
+        gname = ylab.replace(CAT_GROUP_PREFIX, "", 1)
+        with st.modal(f"Новая дорожка в группе ‘{gname}’"):
+            name = st.text_input("Название дорожки", max_chars=48)
+            if st.button("Добавить", use_container_width=True):
+                if name:
+                    new_id = f"{gname}:{name}:{int(datetime.now().timestamp())}"
+                    st.session_state.tracks.append({"id": new_id, "group": gname, "name": name})
+                    st.rerun()
+                else:
+                    st.warning("Введите название")
+
+    elif isinstance(ylab, str) and ylab.startswith(CAT_TRACK_PREFIX):
+        # клик по дорожке => добавить/редактировать заметку на выбранную дату
+        tid = track_label_to_id.get(ylab)
+        if tid:
+            # найти существующую запись для этой даты
+            idx = None
+            for i, e in enumerate(st.session_state.entries):
+                if e["track_id"] == tid and to_date(e["date"]) == xval:
+                    idx = i
+                    break
+            existing = st.session_state.entries[idx]["note"] if idx is not None else ""
+
+            with st.modal(f"Заметка — {ylab.replace(CAT_TRACK_PREFIX,'',1)} · {xval.isoformat()}"):
+                note = st.text_area("Текст заметки", value=existing, height=160, label_visibility="collapsed")
+                c1, c2 = st.columns([1,1])
+                with c1:
+                    if st.button("Сохранить", use_container_width=True):
+                        if idx is None:
+                            st.session_state.entries.append({"date": xval.isoformat(), "track_id": tid, "note": note.strip()})
+                        else:
+                            st.session_state.entries[idx]["note"] = note.strip()
+                        st.rerun()
+                with c2:
+                    if st.button("Удалить точку", use_container_width=True):
+                        if idx is not None:
+                            st.session_state.entries.pop(idx)
+                        st.rerun()
+
+# Низ — лёгкая подсказка (без контролов)
+st.caption("Клик по названию группы — добавить дорожку. Клик по строке дорожки — создать/изменить заметку на выбранную дату. Точки без заметок — микро-напоминалки; с текстом превращаются в ‘звёзды’ и растут.")

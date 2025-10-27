@@ -24,6 +24,10 @@ except Exception:
 
 st.set_page_config(page_title="Timeline Tracker", layout="wide")
 
+# Пояснение, если клики недоступны (нет streamlit-plotly-events)
+if not _HAS_EVENTS:
+    st.warning("Клики по дорожкам отключены: установите зависимость `streamlit-plotly-events` и перезапустите приложение. Пока доступен только просмотр.")
+
 # =====================
 # Вспомогательные
 # =====================
@@ -299,7 +303,7 @@ for g in st.session_state.groups:
 fig.update_layout(
     height=max(420, 56 * max(2, len(cat_labels))),
     margin=dict(l=20, r=20, t=10, b=10),
-    dragmode="pan",  # ЛКМ — панорама; никаких выделений
+    dragmode="zoom",  # отключаем панорамирование ЛКМ, оставляем клики
     xaxis=dict(
         range=[pd.Timestamp(START), pd.Timestamp(FINISH)],
         showgrid=False,
@@ -319,12 +323,13 @@ fig.update_layout(
         title="",
     ),
     hovermode="closest",
+    clickmode="event+select",
 )
 
 config = {
     "displaylogo": False,
     "displayModeBar": False,
-    "scrollZoom": True,
+    "scrollZoom": False,
     "doubleClick": "reset",
 }
 

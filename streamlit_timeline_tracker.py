@@ -12,21 +12,35 @@ import plotly.graph_objects as go
 import streamlit as st
 from dateutil.relativedelta import relativedelta
 
-# Опциональный компонент кликов; без него приложение работает в статичном режиме
-try:
-    from streamlit_plotly_events import plotly_events as _plotly_events
-    _HAS_EVENTS = True
-except Exception:
-    _HAS_EVENTS = False
-    def _plotly_events(fig, **kwargs):
-        st.plotly_chart(fig, use_container_width=True, config=kwargs.get("config"))
-        return []
+# Захват кликов: пробуем импортировать, при неудаче — устанавливаем пакет на лету
+import sys, subprocess
+
+def _get_plotly_events():
+    try:
+        from streamlit_plotly_events import plotly_events as _pe
+        return _pe
+    except Exception:
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit-plotly-events>=0.0.6", "--quiet"])  # авто-установка
+            from streamlit_plotly_events import plotly_events as _pe
+            return _pe
+        except Exception:
+            return None
+
+_PLOTLY_EVENTS = _get_plotly_events()
+_HAS_EVENTS = _PLOTLY_EVENTS is not None
+
+def _plotly_events(fig, **kwargs):
+    if _PLOTLY_EVENTS:
+        return _PLOTLY_EVENTS(fig, **kwargs)
+    st.plotly_chart(fig, use_container_width=True)
+    return []
 
 st.set_page_config(page_title="Timeline Tracker", layout="wide")
 
-# Пояснение, если клики недоступны (нет streamlit-plotly-events)
+# Пояснение, если клики недоступны
 if not _HAS_EVENTS:
-    st.warning("Клики по дорожкам отключены: установите зависимость `streamlit-plotly-events` и перезапустите приложение. Пока доступен только просмотр.")
+    st.info("Первый запуск: ставлю зависимость для кликов… Если клики не появились — перезапусти приложение.")
 
 # =====================
 # Вспомогательные

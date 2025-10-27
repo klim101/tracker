@@ -342,7 +342,6 @@ clicked = _plotly_events(
     override_height=fig.layout.height,
     override_width="100%",
     key="timeline-minimal",
-    config=config,
 )
 
 # =====================

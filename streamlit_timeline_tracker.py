@@ -210,7 +210,7 @@ fig.add_trace(
         mode="markers",
         marker=dict(size=12, color="rgba(0,0,0,0.001)"),
         hoverinfo="skip",
-        name="add-group",
+        name="action:add-group",
         showlegend=False,
     )
 )
@@ -236,7 +236,7 @@ for g in st.session_state.groups:
             mode="markers",
             marker=dict(size=14, color="rgba(0,0,0,0.001)"),
             hoverinfo="skip",
-            name=f"group-actions-{g}",
+            name=f"action:group:{g}",
             showlegend=False,
         )
     )
@@ -306,9 +306,9 @@ for g in st.session_state.groups:
                 x=all_days,
                 y=[ylab] * len(all_days),
                 mode="markers",
-                marker=dict(size=14, color="rgba(0,0,0,0.001)"),
+                marker=dict(size=24, color="rgba(0,0,0,0.001)"),
                 hoverinfo="skip",
-                name=f"add-note-{t['id']}",
+                name=f"action:note:{t['id']}",
                 showlegend=False,
             )
         )
@@ -317,7 +317,7 @@ for g in st.session_state.groups:
 fig.update_layout(
     height=max(420, 56 * max(2, len(cat_labels))),
     margin=dict(l=20, r=20, t=10, b=10),
-    dragmode="zoom",  # отключаем панорамирование ЛКМ, оставляем клики
+    dragmode=False,  # полностью отключаем панораму/зум; ЛКМ только клики
     xaxis=dict(
         range=[pd.Timestamp(START), pd.Timestamp(FINISH)],
         showgrid=False,
@@ -359,15 +359,21 @@ clicked = _plotly_events(
 )
 
 # =====================
-# Обработка кликов (простые модалки вместо UI)
+# Обработка кликов (по trace.name, без двусмысленностей оси Y)
 # =====================
 if clicked:
     pt = clicked[0]
-    ylab = pt.get("y")
     xval = to_date(pt.get("x"))
+    curve_idx = pt.get("curveNumber")
+    trace_name = None
+    try:
+        trace_name = fig.data[curve_idx].name
+    except Exception:
+        trace_name = ""
 
     # 1) Создание новой подгруппы
-    if isinstance(ylab, str) and ylab == NEW_GROUP_LABEL:
+    if trace_name == "action:add-group":
+
         with st.modal("Новая подгруппа"):
             gname = st.text_input("Название подгруппы", max_chars=48)
             if st.button("Добавить", use_container_width=True):
@@ -378,8 +384,8 @@ if clicked:
                     st.warning("Введите уникальное название")
 
     # 2) Действия над группой: добавить дорожку / переименовать / удалить
-    elif isinstance(ylab, str) and ylab.startswith(CAT_GROUP_PREFIX):
-        old = ylab.replace(CAT_GROUP_PREFIX, "", 1)
+    elif isinstance(trace_name, str) and trace_name.startswith("action:group:"):
+        old = trace_name.split(":", 2)[2]
         with st.modal(f"Группа: {old}"):
             mode = st.radio("Действие", ["Добавить дорожку", "Переименовать", "Удалить"], horizontal=True)
             if mode == "Добавить дорожку":
@@ -411,8 +417,8 @@ if clicked:
                     st.rerun()
 
     # 3) Добавить/редактировать заметку на дорожке
-    elif isinstance(ylab, str) and ylab.startswith(CAT_TRACK_PREFIX):
-        tid = track_label_to_id.get(ylab)
+    elif isinstance(trace_name, str) and trace_name.startswith("action:note:"):
+        tid = trace_name.split(":", 2)[2]
         if tid:
             # поиск существующей записи на дату
             idx = None
@@ -422,7 +428,7 @@ if clicked:
                     break
             existing = st.session_state.entries[idx]["note"] if idx is not None else ""
 
-            with st.modal(f"Заметка — {ylab.replace(CAT_TRACK_PREFIX,'',1)} · {xval.isoformat()}"):
+            with st.modal(f"Заметка — дорожка · {xval.isoformat()}"):
                 note = st.text_area("Текст заметки", value=existing, height=160, label_visibility="collapsed")
                 c1, c2 = st.columns([1,1])
                 with c1:
